@@ -21,8 +21,14 @@ SOURCE_RSS = (
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 Chrome/151 Safari/537.36"
-    )
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/151.0.0.0 Safari/537.36"
+    ),
+    "Accept": (
+        "text/html,application/xhtml+xml,application/xml;"
+        "q=0.9,image/avif,image/webp,*/*;q=0.8"
+    ),
+    "Accept-Language": "en-US,en;q=0.9",
 }
 
 REQUEST_TIMEOUT = 30
@@ -117,7 +123,7 @@ def contains_keyword(text, keywords):
     for keyword in keywords:
         keyword_lower = keyword.lower()
 
-        # 短い略語は単語として完全一致させる
+        # 短い略語は単語として完全一致
         if keyword_lower in {
             "tem",
             "stem",
@@ -139,6 +145,53 @@ def contains_keyword(text, keywords):
 
 
 # ============================================================
+# Science Advances RSSを取得
+# ============================================================
+
+def get_source_feed():
+    print("Science Advances RSSへアクセスします...")
+
+    try:
+        response = requests.get(
+            SOURCE_RSS,
+            headers=HEADERS,
+            timeout=REQUEST_TIMEOUT,
+            allow_redirects=True,
+        )
+
+        print(f"RSS HTTP status: {response.status_code}")
+        print(f"RSS final URL: {response.url}")
+        print(
+            "RSS Content-Type: "
+            f"{response.headers.get('Content-Type', 'unknown')}"
+        )
+        print(f"RSS response size: {len(response.content)} bytes")
+
+        response.raise_for_status()
+
+    except requests.RequestException as e:
+        print(f"RSS取得失敗: {e}")
+        return None
+
+    feed = feedparser.parse(response.content)
+
+    if getattr(feed, "bozo", False):
+        print(f"RSS parser warning: {feed.bozo_exception}")
+
+    print(f"RSS entries: {len(feed.entries)}")
+
+    if len(feed.entries) == 0:
+        preview = response.text[:500]
+        preview = preview.replace("\n", " ")
+
+        print("RSSから記事を取得できませんでした。")
+        print("Response preview:")
+        print(preview)
+
+    return feed
+
+
+# ============================================================
 # Science論文ページからAbstractを取得
 # ============================================================
 
@@ -148,6 +201,7 @@ def get_abstract(url):
             url,
             headers=HEADERS,
             timeout=REQUEST_TIMEOUT,
+            allow_redirects=True,
         )
 
         response.raise_for_status()
@@ -174,7 +228,22 @@ def get_abstract(url):
             return abstract
 
     # --------------------------------------------------------
-    # 2. description系metaタグ
+    # 2. DC.Description
+    # --------------------------------------------------------
+
+    meta = soup.find(
+        "meta",
+        attrs={"name": "DC.Description"},
+    )
+
+    if meta and meta.get("content"):
+        abstract = clean_text(meta["content"])
+
+        if abstract:
+            return abstract
+
+    # --------------------------------------------------------
+    # 3. description / og:description
     # --------------------------------------------------------
 
     for attrs in [
@@ -190,7 +259,7 @@ def get_abstract(url):
                 return abstract
 
     # --------------------------------------------------------
-    # 3. AbstractセクションをHTMLから探索
+    # 4. AbstractセクションをHTMLから探索
     # --------------------------------------------------------
 
     selectors = [
@@ -198,6 +267,8 @@ def get_abstract(url):
         "div.abstract",
         ".abstract",
         "#abstract",
+        ".article__abstract",
+        ".article-section__abstract",
     ]
 
     for selector in selectors:
@@ -236,7 +307,11 @@ def create_rss(filename, channel_title, articles):
     channel = SubElement(rss, "channel")
 
     SubElement(channel, "title").text = channel_title
-    SubElement(channel, "link").text = "https://www.science.org/journal/sciadv"
+
+    SubElement(channel, "link").text = (
+        "https://www.science.org/journal/sciadv"
+    )
+
     SubElement(channel, "description").text = (
         "Filtered papers from Science Advances"
     )
@@ -258,12 +333,19 @@ def create_rss(filename, channel_title, articles):
             "guid",
             {"isPermaLink": "true"},
         )
+
         guid.text = article["link"]
 
         if article.get("published"):
-            SubElement(item, "pubDate").text = article["published"]
+            SubElement(
+                item,
+                "pubDate",
+            ).text = article["published"]
 
-        SubElement(item, "description").text = article["abstract"]
+        SubElement(
+            item,
+            "description",
+        ).text = article["abstract"]
 
     tree = ElementTree(rss)
 
@@ -283,20 +365,34 @@ def create_rss(filename, channel_title, articles):
 def main():
     print("Science Advances RSSを取得します...")
 
-    feed = feedparser.parse(SOURCE_RSS)
+    feed = get_source_feed()
 
-    print(f"RSS entries: {len(feed.entries)}")
+    if feed is None:
+        print("RSSを取得できなかったため終了します。")
+        raise SystemExit(1)
+
+    if len(feed.entries) == 0:
+        print("RSSの記事数が0件のため終了します。")
+        raise SystemExit(1)
 
     battery_articles = []
     microscopy_articles = []
     battery_microscopy_articles = []
 
-    for number, entry in enumerate(feed.entries, start=1):
-        title = clean_text(entry.get("title", ""))
+    total = len(feed.entries)
+
+    for number, entry in enumerate(
+        feed.entries,
+        start=1,
+    ):
+        title = clean_text(
+            entry.get("title", "")
+        )
+
         link = entry.get("link", "")
 
         print()
-        print(f"[{number}/{len(feed.entries)}]")
+        print(f"[{number}/{total}]")
         print(title)
         print(link)
 
@@ -309,11 +405,19 @@ def main():
         abstract = get_abstract(link)
 
         if abstract:
-            print(f"  Abstract取得成功 ({len(abstract)} characters)")
+            print(
+                "  Abstract取得成功 "
+                f"({len(abstract)} characters)"
+            )
         else:
-            print("  Abstractを取得できませんでした")
+            print(
+                "  Abstractを取得できませんでした"
+            )
 
-        # タイトルとAbstractの両方を検索対象にする
+        # --------------------------------------------
+        # Title + Abstractを検索対象にする
+        # --------------------------------------------
+
         search_text = f"{title} {abstract}"
 
         is_battery = contains_keyword(
@@ -330,7 +434,10 @@ def main():
             "title": title,
             "link": link,
             "abstract": abstract,
-            "published": entry.get("published", ""),
+            "published": entry.get(
+                "published",
+                "",
+            ),
         }
 
         if is_battery:
@@ -342,8 +449,13 @@ def main():
             print("  → Microscopy")
 
         if is_battery and is_microscopy:
-            battery_microscopy_articles.append(article)
-            print("  → Battery + Microscopy")
+            battery_microscopy_articles.append(
+                article
+            )
+
+            print(
+                "  → Battery + Microscopy"
+            )
 
         time.sleep(REQUEST_INTERVAL)
 
@@ -364,7 +476,10 @@ def main():
 
     create_rss(
         "battery_microscopy.xml",
-        "Science Advances - Battery and Electron Microscopy",
+        (
+            "Science Advances - "
+            "Battery and Electron Microscopy"
+        ),
         battery_microscopy_articles,
     )
 
