@@ -30,6 +30,8 @@ jobs:
           pip install -r requirements.txt
 
       - name: Run RSS filter
+        env:
+          OPENALEX_API_KEY: ${{ secrets.OPENALEX_API_KEY }}
         run: python filter_rss.py
 
       - name: Commit updated RSS files
