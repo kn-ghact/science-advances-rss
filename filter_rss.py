@@ -29,13 +29,20 @@ LOOKBACK_DAYS = 30
 # 電池関連キーワード
 # ============================================================
 #
-# 強いキーワード:
-#   単独で出現しても電池関連である可能性が高いもの
+# 1. 強いキーワード
+#    単独で出現しても電池関連と判定する。
 #
-# 弱いキーワード:
-#   electrode など、他分野でも頻繁に使われるもの
+# 2. 化学種キーワード
+#    Li, Na, K, Znなど。
+#
+# 3. 電池構成・電気化学キーワード
+#    cathode, anode, electrolyteなど。
+#
+# 「化学種」+「電池構成・電気化学語」の組み合わせでも
+# Batteryと判定する。
 #
 # ============================================================
+
 
 BATTERY_STRONG_KEYWORDS = [
     "battery",
@@ -47,6 +54,8 @@ BATTERY_STRONG_KEYWORDS = [
     "sodium ion",
     "potassium-ion",
     "potassium ion",
+    "zinc-ion",
+    "zinc ion",
     "solid-state battery",
     "solid state battery",
     "all-solid-state battery",
@@ -55,6 +64,10 @@ BATTERY_STRONG_KEYWORDS = [
     "lithium sulfur battery",
     "lithium-metal battery",
     "lithium metal battery",
+    "sodium-metal battery",
+    "sodium metal battery",
+    "potassium-metal battery",
+    "potassium metal battery",
     "metal-air battery",
     "metal air battery",
     "zinc-air battery",
@@ -64,35 +77,63 @@ BATTERY_STRONG_KEYWORDS = [
     "delithiation",
     "sodiation",
     "desodiation",
+    "potassiation",
+    "depotassiation",
 ]
 
 
-BATTERY_CONTEXT_KEYWORDS = [
+# ------------------------------------------------------------
+# 電池で使用される化学種
+# ------------------------------------------------------------
+
+BATTERY_CHEMISTRY_KEYWORDS = [
     "lithium",
     "sodium",
     "potassium",
+    "zinc",
+    "magnesium",
+    "calcium",
+]
+
+
+# ------------------------------------------------------------
+# 電池構成・電気化学関連語
+# ------------------------------------------------------------
+
+BATTERY_COMPONENT_KEYWORDS = [
     "cathode",
     "anode",
     "electrolyte",
     "electrode",
-    "electrochemical",
     "intercalation",
     "deintercalation",
     "charge-discharge",
     "charge discharge",
+    "charging",
+    "discharging",
     "state of charge",
-    "energy storage",
+    "coulombic efficiency",
+    "specific capacity",
+    "capacity retention",
+    "cycle life",
+    "cycling stability",
+    "electrochemical cycling",
+    "ion conductor",
+    "ionic conductor",
+    "solid electrolyte",
+    "li deposition",
+    "li stripping",
+    "na deposition",
+    "na stripping",
+    "zn deposition",
+    "zn stripping",
+    "k deposition",
+    "k stripping",
 ]
 
 
 # ============================================================
 # 電子顕微鏡関連キーワード
-# ============================================================
-#
-# TEM / STEM / EDS などの短い略語は、
-# 他の意味で使用される可能性があるため、
-# 単独では判定しません。
-#
 # ============================================================
 
 MICROSCOPY_STRONG_KEYWORDS = [
@@ -104,6 +145,8 @@ MICROSCOPY_STRONG_KEYWORDS = [
     "high resolution transmission electron microscopy",
     "cryo-electron microscopy",
     "cryo electron microscopy",
+    "cryo–transmission electron microscopy",
+    "cryo-transmission electron microscopy",
     "electron energy-loss spectroscopy",
     "electron energy loss spectroscopy",
     "energy-dispersive x-ray spectroscopy",
@@ -144,10 +187,19 @@ def clean_text(text):
 
     text = html.unescape(text)
 
-    # OpenAlexのタイトル等にHTMLタグが含まれる場合があるため除去
-    text = re.sub(r"<[^>]+>", "", text)
+    # HTMLタグを除去
+    text = re.sub(
+        r"<[^>]+>",
+        "",
+        text,
+    )
 
-    text = re.sub(r"\s+", " ", text)
+    # 連続する空白を1つにする
+    text = re.sub(
+        r"\s+",
+        " ",
+        text,
+    )
 
     return text.strip()
 
@@ -182,15 +234,23 @@ def reconstruct_abstract(inverted_index):
         for _, word in words
     )
 
-    return clean_text(abstract)
+    return clean_text(
+        abstract
+    )
 
 
 # ============================================================
-# フレーズ検索
+# キーワード検索
 # ============================================================
 
-def contains_phrase(text, phrase):
-    return phrase.lower() in text.lower()
+def contains_any_keyword(text, keywords):
+    text_lower = text.lower()
+
+    for keyword in keywords:
+        if keyword.lower() in text_lower:
+            return True
+
+    return False
 
 
 # ============================================================
@@ -198,31 +258,57 @@ def contains_phrase(text, phrase):
 # ============================================================
 
 def is_battery_related(text):
-    text_lower = text.lower()
+    """
+    電池関連論文かどうかを判定する。
+
+    条件1:
+        battery等の強いキーワードが存在
+        → Battery
+
+    条件2:
+        電池化学種
+        +
+        電池構成・電気化学関連語
+        → Battery
+    """
 
     # --------------------------------------------------------
     # 1. 強いキーワード
     # --------------------------------------------------------
 
-    for keyword in BATTERY_STRONG_KEYWORDS:
-        if keyword.lower() in text_lower:
-            return True
+    if contains_any_keyword(
+        text,
+        BATTERY_STRONG_KEYWORDS,
+    ):
+        return True
 
     # --------------------------------------------------------
-    # 2. 文脈キーワード
-    #
-    # 1語だけでは判定せず、2種類以上存在する場合に採用
+    # 2. 化学種
     # --------------------------------------------------------
 
-    matched = set()
+    has_chemistry = (
+        contains_any_keyword(
+            text,
+            BATTERY_CHEMISTRY_KEYWORDS,
+        )
+    )
 
-    for keyword in BATTERY_CONTEXT_KEYWORDS:
-        if keyword.lower() in text_lower:
-            matched.add(
-                keyword.lower()
-            )
+    # --------------------------------------------------------
+    # 3. 電池構成・電気化学語
+    # --------------------------------------------------------
 
-    if len(matched) >= 2:
+    has_component = (
+        contains_any_keyword(
+            text,
+            BATTERY_COMPONENT_KEYWORDS,
+        )
+    )
+
+    # --------------------------------------------------------
+    # 化学種 + 電池構成語
+    # --------------------------------------------------------
+
+    if has_chemistry and has_component:
         return True
 
     return False
@@ -236,7 +322,7 @@ def is_microscopy_related(text):
     text_lower = text.lower()
 
     # --------------------------------------------------------
-    # 1. 強いキーワード
+    # 1. 明確な電子顕微鏡関連表現
     # --------------------------------------------------------
 
     for keyword in MICROSCOPY_STRONG_KEYWORDS:
@@ -244,7 +330,10 @@ def is_microscopy_related(text):
             return True
 
     # --------------------------------------------------------
-    # 2. TEM / STEM + microscopy系文脈
+    # 2. TEM/STEM等の略語
+    #
+    # 略語単独では誤検出の可能性があるため、
+    # microscopy関連文脈が存在する場合のみ採用。
     # --------------------------------------------------------
 
     microscopy_context = [
@@ -320,6 +409,7 @@ def get_science_advances_source():
         print(
             f"Source取得失敗: {e}"
         )
+
         raise SystemExit(1)
 
     source = response.json()
@@ -347,6 +437,7 @@ def get_science_advances_source():
             "Science AdvancesのSource IDを"
             "取得できませんでした。"
         )
+
         raise SystemExit(1)
 
     if source_name.lower() != "science advances":
@@ -380,6 +471,7 @@ def get_articles(source_id):
     )
 
     print()
+
     print(
         f"{start_date} ～ {today} の論文を"
         "OpenAlexから取得します..."
@@ -395,7 +487,9 @@ def get_articles(source_id):
     page_number = 1
 
     while cursor:
+
         print()
+
         print(
             f"OpenAlex page {page_number} を取得中..."
         )
@@ -433,6 +527,7 @@ def get_articles(source_id):
             print(
                 f"Works取得失敗: {e}"
             )
+
             raise SystemExit(1)
 
         data = response.json()
@@ -459,18 +554,18 @@ def get_articles(source_id):
             "next_cursor"
         )
 
-        # 結果が0件なら終了
         if not results:
             break
 
-        # 次のcursorがなければ終了
         if not next_cursor:
             break
 
         cursor = next_cursor
+
         page_number += 1
 
     print()
+
     print(
         "取得論文総数: "
         f"{len(all_results)}"
@@ -570,6 +665,7 @@ def create_rss(
     )
 
     for article in articles:
+
         item = SubElement(
             channel,
             "item",
@@ -593,8 +689,7 @@ def create_rss(
             item,
             "guid",
             {
-                "isPermaLink":
-                    "false",
+                "isPermaLink": "false",
             },
         )
 
@@ -609,6 +704,7 @@ def create_rss(
         )
 
         if publication_date:
+
             try:
                 publication_datetime = (
                     datetime.strptime(
@@ -631,10 +727,7 @@ def create_rss(
             except ValueError:
                 pass
 
-        # ----------------------------------------------------
-        # Abstract全文をRSSのdescriptionへ格納
-        # ----------------------------------------------------
-
+        # Abstract全文
         SubElement(
             item,
             "description",
@@ -663,12 +756,14 @@ def create_rss(
 # ============================================================
 
 def main():
+
     print(
         "OpenAlexを使用して"
         "Science Advancesの論文を取得します。"
     )
 
     if not API_KEY:
+
         print(
             "エラー: OPENALEX_API_KEYが"
             "設定されていません。"
@@ -685,7 +780,7 @@ def main():
     )
 
     # --------------------------------------------------------
-    # 論文を全件取得
+    # 論文取得
     # --------------------------------------------------------
 
     works = get_articles(
@@ -693,6 +788,7 @@ def main():
     )
 
     if not works:
+
         print(
             "対象期間の論文を"
             "取得できませんでした。"
@@ -701,7 +797,9 @@ def main():
         raise SystemExit(1)
 
     battery_articles = []
+
     microscopy_articles = []
+
     battery_microscopy_articles = []
 
     abstract_count = 0
@@ -718,6 +816,7 @@ def main():
         works,
         start=1,
     ):
+
         title = clean_text(
             work.get(
                 "display_name",
@@ -748,6 +847,7 @@ def main():
         )
 
         print()
+
         print(
             f"[{number}/{total}]"
         )
@@ -762,17 +862,20 @@ def main():
         )
 
         if abstract:
+
             print(
                 "Abstract: "
                 f"{len(abstract)} characters"
             )
+
         else:
+
             print(
                 "Abstract: なし"
             )
 
         # ----------------------------------------------------
-        # Title + Abstractを判定対象にする
+        # Title + Abstract
         # ----------------------------------------------------
 
         search_text = (
@@ -804,6 +907,7 @@ def main():
         }
 
         if battery:
+
             battery_articles.append(
                 article
             )
@@ -813,6 +917,7 @@ def main():
             )
 
         if microscopy:
+
             microscopy_articles.append(
                 article
             )
@@ -822,6 +927,7 @@ def main():
             )
 
         if battery and microscopy:
+
             battery_microscopy_articles.append(
                 article
             )
@@ -835,12 +941,15 @@ def main():
     # ========================================================
 
     print()
+
     print(
         "=============================="
     )
+
     print(
         "取得結果"
     )
+
     print(
         "=============================="
     )
@@ -912,6 +1021,7 @@ def main():
     )
 
     print()
+
     print(
         "完了しました。"
     )
